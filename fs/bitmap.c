@@ -1,3 +1,9 @@
+/*
+ *  linux/fs/bitmap.c
+ *
+ *  (C) 1991  Linus Torvalds
+ */
+
 /* bitmap.c contains the code that handles the inode and block bitmaps */
 #include <string.h>
 
@@ -12,12 +18,14 @@ __asm__("cld\n\t" \
 
 #define set_bit(nr,addr) ({\
 register int res __asm__("ax"); \
-__asm__("btsl %2,%3\n\tsetb %%al":"=a" (res):"0" (0),"r" (nr),"m" (*(addr))); \
+__asm__ __volatile__("btsl %2,%3\n\tsetb %%al": \
+"=a" (res):"0" (0),"r" (nr),"m" (*(addr))); \
 res;})
 
 #define clear_bit(nr,addr) ({\
 register int res __asm__("ax"); \
-__asm__("btrl %2,%3\n\tsetnb %%al":"=a" (res):"0" (0),"r" (nr),"m" (*(addr))); \
+__asm__ __volatile__("btrl %2,%3\n\tsetnb %%al": \
+"=a" (res):"0" (0),"r" (nr),"m" (*(addr))); \
 res;})
 
 #define find_first_zero(addr) ({ \
@@ -36,7 +44,7 @@ __asm__("cld\n" \
 	:"=c" (__res):"c" (0),"S" (addr):"ax","dx","si"); \
 __res;})
 
-void free_block(int dev, int block)
+int free_block(int dev, int block)
 {
 	struct super_block * sb;
 	struct buffer_head * bh;
@@ -47,21 +55,22 @@ void free_block(int dev, int block)
 		panic("trying to free block not in datazone");
 	bh = get_hash_table(dev,block);
 	if (bh) {
-		if (bh->b_count != 1) {
-			printk("trying to free block (%04x:%d), count=%d\n",
-				dev,block,bh->b_count);
-			return;
+		if (bh->b_count > 1) {
+			brelse(bh);
+			return 0;
 		}
 		bh->b_dirt=0;
 		bh->b_uptodate=0;
-		brelse(bh);
+		if (bh->b_count)
+			brelse(bh);
 	}
 	block -= sb->s_firstdatazone - 1 ;
 	if (clear_bit(block&8191,sb->s_zmap[block/8192]->b_data)) {
 		printk("block (%04x:%d) ",dev,block+sb->s_firstdatazone-1);
-		panic("free_block: bit already cleared");
+		printk("free_block: bit already cleared\n");
 	}
 	sb->s_zmap[block/8192]->b_dirt = 1;
+	return 1;
 }
 
 int new_block(int dev)
@@ -120,7 +129,7 @@ void free_inode(struct m_inode * inode)
 	if (!(bh=sb->s_imap[inode->i_num>>13]))
 		panic("nonexistent imap in superblock");
 	if (clear_bit(inode->i_num&8191,bh->b_data))
-		panic("free_inode: bit already cleared");
+		printk("free_inode: bit already cleared.\n\r");
 	bh->b_dirt = 1;
 	memset(inode,0,sizeof(*inode));
 }
@@ -151,6 +160,8 @@ struct m_inode * new_inode(int dev)
 	inode->i_count=1;
 	inode->i_nlinks=1;
 	inode->i_dev=dev;
+	inode->i_uid=current->euid;
+	inode->i_gid=current->egid;
 	inode->i_dirt=1;
 	inode->i_num = j + i*8192;
 	inode->i_mtime = inode->i_atime = inode->i_ctime = CURRENT_TIME;
